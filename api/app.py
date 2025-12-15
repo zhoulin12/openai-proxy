@@ -1,7 +1,6 @@
-# api/proxy.py 内容
 from http.client import HTTPException
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request  # 导入 Request 用于获取请求头
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -16,22 +15,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 从 Vercel 环境变量读取 OpenAI Key（最安全的方式）
+# 从 Vercel 环境变量读取密钥
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# 🔐 新增：从环境变量读取你自己的访问密钥
+YOUR_SECRET_TOKEN = os.environ.get("YOUR_SECRET_TOKEN")
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 @app.post("/v1/chat/completions")
-async def proxy_to_openai(request: dict):
+async def proxy_to_openai(request: Request):  # 修改参数为 Request 对象
+    # 🔐 新增：第一步，验证客户端密钥
+    client_token = request.headers.get("X-API-Key")
+    if not YOUR_SECRET_TOKEN:
+        # 如果服务器未设置密钥，拒绝所有请求（安全兜底）
+        raise HTTPException(status_code=500, detail="Server configuration error")
+    if client_token != YOUR_SECRET_TOKEN:
+        # 密钥不匹配，返回 403 禁止访问
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing API Key")
+    
+    # 🔐 验证通过，继续处理
+    try:
+        # 获取客户端发送的 JSON 请求体
+        request_body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            # 关键：将请求转发给真正的 OpenAI API
+            # 转发给 OpenAI
             response = await client.post(
                 f"{OPENAI_BASE_URL}/chat/completions",
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {OPENAI_API_KEY}"
                 },
-                json=request
+                json=request_body  # 使用解析后的请求体
             )
             return response.json()
         except httpx.TimeoutException:
